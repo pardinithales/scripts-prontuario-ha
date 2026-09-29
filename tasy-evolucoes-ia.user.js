@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tasy - Evolucoes + IA (correcao e relatorio)
 // @namespace    local.thales.evolucoes.ia
-// @version      2.4.0
+// @version      2.5.0
 // @description  Os botoes do script antigo (Copiar + TXT, Baixar XLS) mais o botao Relatorio IA: com uma chave de API (Claude, OpenAI ou Gemini) gera num so clique o relatorio medico a partir das notas mais recentes, em TXT e na area de transferencia (evolucoes corrigidas opcionais).
 // @match        https://tasy.hospitaldeamor.com.br/*
 // @grant        GM_setClipboard
@@ -204,17 +204,18 @@
     'NUNCA acrescente informação, hipótese, conclusão, dado ou frase; NUNCA remova dado clínico, número, data, dose, exame ou conduta; NUNCA resuma, reorganize ou junte evoluções; mantenha as quebras de linha, os rótulos (HMA, EF, HD, CD, MEDICAÇÕES etc.), as siglas e o estilo telegráfico do médico quando existir. Português do Brasil. Não use markdown além da linha "### EVOLUÇÃO". Não cite nome de paciente: se aparecer um nome de paciente ou familiar, substitua por "o paciente" ou "familiar". Devolva só o texto corrigido, inteiro.',
   ].join('\n');
 
-  // Resumo do caso (prompt do medico, 29/09/2026): etiologias/pendencias, so o
-  // que e > 90-95% certo, cronologico, 2 partes (raciocinio + resumo p/ evolucao).
+  // Resumo do caso (pedido do medico, 29/09/2026): texto pronto para colar no
+  // topo da evolucao, no formato de secoes "# Titulo" que ele ja usa. Historico
+  // neuro direto; parte onco/hemato didatica (nao e a area dele); HD por ultimo,
+  // com a impressao concisa. Sem "PARTE 1/2", sem roteiro rigido.
   const PROMPT_RESUMO = [
-    'Você recebe evoluções clínicas de neurologia de um prontuário, da mais recente para a mais antiga. Foque nas possíveis etiologias e pendências. Cruze as informações. Deixe somente o que é mais de 90% correto. Não crie, não invente.',
-    'Concisamente, deixe cronologicamente ordenadas as queixas explícitas, os tratamentos, e cruze os exames. Veja possibilidade de paraneoplásico. Veja possibilidades pelo exame, plausibilidade. Seja conciso, direto. Veja temporalidade, início, veja pela LÓGICA.',
-    'Estabeleça primeiro um sumário só do que é alterado; pense no que é e no que não é. Traga somente o que é alterado, o que é datado, o que é temporalmente presente e objetivo com mais de 0,95 de certeza. Se disponíveis, analise prescrições, tendências que já vinham acontecendo, confronte contradições clínicas, sinais, anomalias.',
-    'Só em seguida raciocine: confronte exames com sinais clínicos e dados objetivos.',
-    'Sua resposta tem 2 partes, com estes títulos exatos em linha própria:',
-    'PARTE 1: concisa, explicando o raciocínio em ordem das 3 maiores possibilidades diagnósticas.',
-    'PARTE 2: resumo para deixar na evolução, explícito, dos acontecimentos clínicos e dos exames mais relevantes para as hipóteses, em texto corrido, usando as abreviações habituais da neurologia, curto e conciso.',
-    'Sem markdown, sem bullets, sem travessões. Não cite nome de paciente, familiar ou profissional.',
+    'Você recebe evoluções clínicas de neurologia de um prontuário, da mais recente para a mais antiga. Escreva o resumo do caso para ficar no topo da próxima evolução, do jeito que um neurologista escreve para si mesmo. Use só o que está nas evoluções e só o que é seguro (mais de 90% de certeza); na dúvida, omita. Não invente, não complete lacunas.',
+    'Formato: seções curtas, cada uma iniciada por uma linha "# Título" (sem outro markdown). Primeira linha é a área do caso (ex.: "# NEURO-ONCOLOGIA", "# CEFALEIA", "# EPILEPSIA"). Depois, nesta ordem, só as seções que fizerem sentido para o caso:',
+    '# Histórico: a parte neurológica, bem direta, em ordem cronológica com datas (mês/ano), doses e resposta: o que falhou, o que foi intolerado, o que funcionou, procedimentos e o estado atual. Siglas habituais da neurologia, frases curtas, sem explicar o óbvio.',
+    '# Resumo oncológico (ou hematológico, reumatológico, endócrino etc., quando houver doença de base de outra área): aqui seja didático, porque não é a área do leitor. Diga o tipo de tumor ou doença, estadiamento e marcadores com o significado prático, tratamentos feitos com datas, situação atual (remissão, recidiva, em tratamento), o que vigiar do ponto de vista neurológico (metástase, paraneoplásico, toxicidade de quimioterápico ou imunoterapia, efeitos da radioterapia) e o que os exames mostram. Explique siglas e termos da outra área na primeira vez.',
+    '# Exames relevantes: só os alterados ou os que definem conduta, com data. Termine com o que está pendente ou agendado.',
+    '# HD: por último. Sua impressão, concisa: as hipóteses principais (no máximo 3), uma por linha iniciada por hífen, cada uma com no máximo uma frase de justificativa cruzando clínica e exame. Aponte contradições entre as evoluções quando existirem.',
+    'Sem travessões. Não cite nome de paciente, familiar ou profissional. Devolva só o texto, sem comentários.',
   ].join('\n');
 
   // ------------------------------------------------------------------ IA: chamada
@@ -447,7 +448,7 @@
       ? `Corrige as evolucoes e gera o relatorio com ${PROVEDORES[cfg.provedor].nome} (${cfg.modelo}); sai em TXT e na area de transferencia`
       : 'Sem chave de IA configurada (menu do Tampermonkey): gera prompt + evolucoes para colar numa IA de chat';
     botaoResumo.textContent = `Resumo IA (${Math.min(quantidade, Math.max(cfg.maxNotas, 15) || quantidade)})`;
-    botaoResumo.title = 'Resume o caso (etiologias, pendencias, 3 hipoteses + resumo p/ evolucao) com as notas mais recentes';
+    botaoResumo.title = 'Resume o caso para colar no topo da evolucao (historico neuro direto, doenca de base didatica, exames, HD) com as notas mais recentes';
     botaoCopiar.disabled = quantidade === 0;
     botaoIA.disabled = quantidade === 0;
     botaoResumo.disabled = quantidade === 0 || !cfg.chave;

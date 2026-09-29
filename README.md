@@ -11,8 +11,8 @@ relatório médico e resumo do caso a partir delas, sem sair da tela de Notas cl
 - **Baixar XLS** – aciona o Exportar XLS nativo em cada nota.
 - **Relatorio IA** – manda as 10 notas mais recentes à IA e devolve relatório médico
   (fins previdenciários) em TXT e na área de transferência.
-- **Resumo IA** – até 15 notas; sumário do caso em duas partes (raciocínio das 3
-  principais hipóteses e resumo curto para colar na evolução).
+- **Resumo IA** – até 15 notas; resumo do caso para colar no topo da evolução,
+  em seções (# Histórico, # Resumo oncológico, # Exames relevantes, # HD).
 - **⚙** – provedor (Claude, OpenAI ou Gemini), chave, modelo, saídas.
 
 A chave da API fica só no Tampermonkey do navegador (`GM_setValue`); não há servidor
