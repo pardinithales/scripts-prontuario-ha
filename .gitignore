@@ -1,0 +1,13 @@
+# Só código entra. Capturas do Tasy, exportações e qualquer dado de paciente ficam fora.
+*.html
+*.htm
+*_files/
+*.txt
+*.xls
+*.xlsx
+*.zip
+*.pdf
+*.docx
+.env
+*.log
+Thumbs.db
