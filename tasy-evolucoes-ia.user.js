@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         Tasy - Evolucoes + IA (correcao e relatorio)
 // @namespace    local.thales.evolucoes.ia
-// @version      2.5.0
-// @description  Os botoes do script antigo (Copiar + TXT, Baixar XLS) mais o botao Relatorio IA: com uma chave de API (Claude, OpenAI ou Gemini) gera num so clique o relatorio medico a partir das notas mais recentes, em TXT e na area de transferencia (evolucoes corrigidas opcionais).
+// @version      3.0.0
+// @description  Na tela de Notas clinicas do Tasy: um clique le as evolucoes medicas mais recentes e gera o relatorio medico (INSS) com IA (Claude, OpenAI ou Gemini), pronto para colar no Atestado. Tambem: resumo do caso, copiar evolucoes em TXT e exportar XLS.
+// @homepageURL  https://github.com/pardinithales/scripts-prontuario-ha
+// @downloadURL  https://raw.githubusercontent.com/pardinithales/scripts-prontuario-ha/main/tasy-evolucoes-ia.user.js
+// @updateURL    https://raw.githubusercontent.com/pardinithales/scripts-prontuario-ha/main/tasy-evolucoes-ia.user.js
 // @match        https://tasy.hospitaldeamor.com.br/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
@@ -20,8 +23,11 @@
   (v1.3.0): ids e nomes diferentes, os dois podem ficar ativos ao mesmo tempo.
 
   A CHAVE DA API E DE CADA MEDICO: fica so no Tampermonkey deste navegador
-  (GM_setValue), nunca sai para outro lugar. Configurar pelo menu do
-  Tampermonkey (icone da extensao > este script > "Configurar IA...").
+  (GM_setValue), nunca sai para outro lugar. Configurar pelo botao ⚙ que
+  aparece ao lado dos outros botoes na tela de Notas clinicas.
+
+  Instalar: com o Tampermonkey instalado, abrir o link do @downloadURL acima
+  e clicar em Instalar. Atualizacoes chegam sozinhas pelo mesmo link.
 
   Privacidade: o bloco IDENTIFICACAO (atendimento, prontuario, nascimento...)
   e os dados da linha (profissional, conselho) NAO sao enviados a IA; so vao
@@ -51,7 +57,7 @@
 
   // ------------------------------------------------------------------ IA: config
 
-  // Modelos padrao sao editaveis no menu "Configurar IA...". Teste de 28/09/2026
+  // Modelos padrao sao editaveis no botao ⚙. Teste de 28/09/2026
   // (caso ficticio, mesmos prompts): claude-sonnet-5-5 cumpriu o roteiro inteiro em
   // 7,9 s (padrao); gpt-6-sol 11 s, pulou riscos; gpt-6-luna 7 s, mais raso mas
   // 20x mais barato. Precos US$ por 1M tokens entrada/saida: sonnet 2/10,
@@ -87,100 +93,200 @@
       workspace: String(GM_getValue('ia_workspace', '') || '').trim(),
       gerarRelatorio: GM_getValue('ia_relatorio', true),
       gerarCorrecao: GM_getValue('ia_correcao', false),   // opcional: dobra o tempo
-      // opcional (desligado): so notas "Evolução Médica"; por padrao vai o que o
-      // filtro do proprio Tasy estiver mostrando
-      soMedicas: GM_getValue('ia_so_medicas', false),
+      // por padrao so notas de medico (coluna Tipo de nota / Funcao da grade),
+      // para nao depender do filtro do Tasy; se a grade nao tiver a coluna,
+      // vai tudo que estiver visivel
+      soMedicas: GM_getValue('ia_so_medicas', true),
+      // o texto sempre aparece na janela + area de transferencia; TXT e opcional
+      baixarTxt: GM_getValue('ia_baixar_txt', false),
       // quantas notas (as mais recentes) vao para a IA; 0 = todas. 26 notas
       // levaram ~1 min em 29/09/2026; 10 basta para o relatorio
       maxNotas: Number(GM_getValue('ia_max_notas', 10)) || 0,
     };
   }
 
+  // ------------------------------------------------------------------ janelas (modal)
+
+  const ESTILO_BOTAO = 'padding:6px 12px;border:0;border-radius:4px;color:#fff;font:bold 13px Arial,sans-serif;cursor:pointer';
+  const ESTILO_CAMPO = 'width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #bbb;border-radius:4px;font:13px Arial,sans-serif';
+
+  /** Janela simples por cima do Tasy. Devolve {corpo, fechar}. Esc ou clique fora fecha. */
+  function abrirJanela(titulo, largura = 560) {
+    document.getElementById('tm-ia-janela')?.remove();
+    const fundo = document.createElement('div');
+    fundo.id = 'tm-ia-janela';
+    fundo.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+    const caixa = document.createElement('div');
+    caixa.style.cssText = `width:${largura}px;max-width:95vw;max-height:92vh;overflow:auto;background:#fff;color:#222;border-radius:8px;box-shadow:0 6px 30px rgba(0,0,0,.4);font:13px Arial,sans-serif`;
+    const cabecalho = document.createElement('div');
+    cabecalho.style.cssText = 'padding:12px 16px;background:#173b59;color:#fff;font:bold 15px Arial,sans-serif;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center';
+    cabecalho.textContent = titulo;
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '✕'; x.title = 'Fechar (Esc)';
+    x.style.cssText = 'background:none;border:0;color:#fff;font-size:16px;cursor:pointer';
+    cabecalho.appendChild(x);
+    const corpo = document.createElement('div');
+    corpo.style.cssText = 'padding:14px 16px';
+    caixa.append(cabecalho, corpo);
+    fundo.appendChild(caixa);
+    const fechar = () => { fundo.remove(); document.removeEventListener('keydown', tecla); };
+    const tecla = (e) => { if (e.key === 'Escape') fechar(); };
+    x.addEventListener('click', fechar);
+    fundo.addEventListener('mousedown', (e) => { if (e.target === fundo) fechar(); });
+    document.addEventListener('keydown', tecla);
+    document.body.appendChild(fundo);
+    return { corpo, fechar };
+  }
+
+  function botaoJanela(rotulo, cor, acao) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = rotulo;
+    b.style.cssText = `${ESTILO_BOTAO};background:${cor}`;
+    b.addEventListener('click', acao);
+    return b;
+  }
+
+  function campoJanela(rotulo, elemento, ajuda) {
+    const bloco = document.createElement('label');
+    bloco.style.cssText = 'display:block;margin:0 0 10px';
+    const titulo = document.createElement('div');
+    titulo.style.cssText = 'font-weight:bold;margin-bottom:3px';
+    titulo.textContent = rotulo;
+    bloco.append(titulo, elemento);
+    if (ajuda) {
+      const dica = document.createElement('div');
+      dica.style.cssText = 'color:#666;font-size:12px;margin-top:2px';
+      dica.textContent = ajuda;
+      bloco.appendChild(dica);
+    }
+    return bloco;
+  }
+
+  function caixaMarcar(rotulo, marcado, ajuda) {
+    const linha = document.createElement('label');
+    linha.style.cssText = 'display:flex;gap:8px;align-items:flex-start;margin:0 0 8px;cursor:pointer';
+    const cx = document.createElement('input');
+    cx.type = 'checkbox'; cx.checked = !!marcado; cx.style.marginTop = '2px';
+    const txt = document.createElement('span');
+    txt.innerHTML = `<b>${rotulo}</b>` + (ajuda ? `<br><span style="color:#666;font-size:12px">${ajuda}</span>` : '');
+    linha.append(cx, txt);
+    return { linha, cx };
+  }
+
+  // ------------------------------------------------------------------ configuracao (botao ⚙)
+
+  /** Uma janela so, com todos os ajustes; a chave continua so no Tampermonkey deste navegador. */
   function configurarIA() {
-    const atual = configIA();
-    const provedor = prompt(
-      'Provedor de IA: digite "anthropic" (padrao, Claude Sonnet 5.5: melhor no teste), "openai" (gpt-6-luna: mais barato) ou "gemini".',
-      atual.provedor);
-    if (provedor === null) return;
-    const escolhido = PROVEDORES[texto(provedor).toLowerCase()] ? texto(provedor).toLowerCase() : PROVEDOR_PADRAO;
-    GM_setValue('ia_provedor', escolhido);
+    const cfg = configIA();
+    const { corpo, fechar } = abrirJanela('Configurar IA');
 
-    const chave = prompt(
-      `Chave da API ${PROVEDORES[escolhido].nome} (fica so neste navegador). ` +
-      'Deixe em branco para manter a atual.',
-      '');
-    if (chave === null) return;
-    if (texto(chave)) GM_setValue('ia_chave', texto(chave));
-
-    const modelo = prompt(
-      `Modelo (Enter para o padrao ${PROVEDORES[escolhido].modeloPadrao}).`,
-      GM_getValue('ia_modelo', '') || PROVEDORES[escolhido].modeloPadrao);
-    if (modelo === null) return;
-    GM_setValue('ia_modelo', texto(modelo) === PROVEDORES[escolhido].modeloPadrao ? '' : texto(modelo));
-
-    if (escolhido === 'anthropic') {
-      const ws = prompt(
-        'ID do workspace da Anthropic (wrkspc_...). Obrigatorio se a chave for da organizacao ' +
-        '(erro "not scoped to a workspace"); deixe em branco se a chave ja for de um workspace.',
-        GM_getValue('ia_workspace', ''));
-      if (ws !== null) GM_setValue('ia_workspace', texto(ws));
+    const selProvedor = document.createElement('select');
+    selProvedor.style.cssText = ESTILO_CAMPO;
+    for (const [id, info] of Object.entries(PROVEDORES)) {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = `${info.nome} (padrao: ${info.modeloPadrao})`;
+      if (id === cfg.provedor) o.selected = true;
+      selProvedor.appendChild(o);
     }
+    const inChave = document.createElement('input');
+    inChave.type = 'password'; inChave.style.cssText = ESTILO_CAMPO; inChave.autocomplete = 'off';
+    inChave.placeholder = cfg.chave ? 'chave ja configurada; deixe em branco para manter' : 'cole aqui a chave da API';
+    const inModelo = document.createElement('input');
+    inModelo.type = 'text'; inModelo.style.cssText = ESTILO_CAMPO;
+    inModelo.value = GM_getValue('ia_modelo', '') || '';
+    inModelo.placeholder = `em branco = ${PROVEDORES[cfg.provedor].modeloPadrao}`;
+    const inWorkspace = document.createElement('input');
+    inWorkspace.type = 'text'; inWorkspace.style.cssText = ESTILO_CAMPO;
+    inWorkspace.value = cfg.workspace; inWorkspace.placeholder = 'wrkspc_... (so se a chave for da organizacao)';
+    const blocoWorkspace = campoJanela('Workspace da Anthropic (opcional)', inWorkspace,
+      'Necessario so se aparecer o erro "not scoped to a workspace".');
+    const inMax = document.createElement('input');
+    inMax.type = 'number'; inMax.min = '0'; inMax.style.cssText = `${ESTILO_CAMPO};width:90px`;
+    inMax.value = String(cfg.maxNotas);
 
-    alert(`IA configurada: ${PROVEDORES[escolhido].nome}, modelo ${configIA().modelo}` +
-      (configIA().chave ? '.' : '. ATENCAO: ainda sem chave; o botao vai gerar so o pacote para colar numa IA.'));
-    atualizarBotoes();
+    const cxRelatorio = caixaMarcar('Relatorio medico (INSS)', cfg.gerarRelatorio);
+    const cxCorrecao = caixaMarcar('Evolucoes corrigidas (portugues; conteudo preservado)', cfg.gerarCorrecao, 'Dobra o tempo. Desligado por padrao.');
+    const cxMedicas = caixaMarcar('So notas de medico', cfg.soMedicas,
+      'Ignora enfermagem, farmacia etc. pela coluna Tipo/Funcao da grade, sem precisar do filtro do Tasy. Se a grade nao tiver essa coluna, vai tudo que estiver visivel.');
+    const cxTxt = caixaMarcar('Baixar TXT automaticamente', cfg.baixarTxt, 'O texto sempre aparece na janela e vai para a area de transferencia; o TXT e opcional.');
+
+    const atualizarProvedor = () => {
+      const p = selProvedor.value;
+      inModelo.placeholder = `em branco = ${PROVEDORES[p].modeloPadrao}`;
+      blocoWorkspace.style.display = p === 'anthropic' ? 'block' : 'none';
+    };
+    selProvedor.addEventListener('change', atualizarProvedor);
+    atualizarProvedor();
+
+    const status = document.createElement('div');
+    status.style.cssText = 'margin:8px 0;min-height:18px;color:#1b5e3a;font-weight:bold';
+
+    const salvar = () => {
+      const p = PROVEDORES[selProvedor.value] ? selProvedor.value : PROVEDOR_PADRAO;
+      GM_setValue('ia_provedor', p);
+      if (texto(inChave.value)) GM_setValue('ia_chave', texto(inChave.value));
+      const modelo = texto(inModelo.value);
+      GM_setValue('ia_modelo', modelo === PROVEDORES[p].modeloPadrao ? '' : modelo);
+      GM_setValue('ia_workspace', texto(inWorkspace.value));
+      GM_setValue('ia_relatorio', cxRelatorio.cx.checked);
+      GM_setValue('ia_correcao', cxCorrecao.cx.checked);
+      GM_setValue('ia_so_medicas', cxMedicas.cx.checked);
+      GM_setValue('ia_baixar_txt', cxTxt.cx.checked);
+      if (/^\d+$/.test(texto(inMax.value))) GM_setValue('ia_max_notas', Number(texto(inMax.value)));
+      atualizarBotoes();
+    };
+
+    const acoes = document.createElement('div');
+    acoes.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:12px';
+    acoes.append(
+      botaoJanela('Salvar', '#1b5e3a', () => { salvar(); fechar(); }),
+      botaoJanela('Salvar e testar chave', '#2155a5', async () => {
+        salvar();
+        status.style.color = '#173b59'; status.textContent = 'Testando...';
+        try {
+          const cfgNova = configIA();
+          if (!cfgNova.chave) throw new Error('nenhuma chave informada');
+          const resposta = await chamarIA(cfgNova, 'Responda apenas: ok', 'teste', { rapido: true });
+          status.style.color = '#1b5e3a';
+          status.textContent = `Chave funcionando (${PROVEDORES[cfgNova.provedor].nome}, ${cfgNova.modelo}): ${texto(resposta).slice(0, 30)}`;
+          inChave.value = ''; inChave.placeholder = 'chave ja configurada; deixe em branco para manter';
+        } catch (erro) {
+          status.style.color = '#9f1d1d'; status.textContent = `Falhou: ${erro.message}`;
+        }
+      }),
+      botaoJanela('Apagar chave', '#9f1d1d', () => {
+        GM_setValue('ia_chave', '');
+        inChave.value = ''; inChave.placeholder = 'cole aqui a chave da API';
+        status.style.color = '#9f1d1d'; status.textContent = 'Chave apagada deste navegador.';
+        atualizarBotoes();
+      }),
+      botaoJanela('Cancelar', '#777', fechar),
+    );
+
+    const aviso = document.createElement('div');
+    aviso.style.cssText = 'background:#f3f6fa;border-left:3px solid #173b59;padding:8px 10px;margin-bottom:12px;color:#333';
+    aviso.textContent = 'A chave fica guardada so no Tampermonkey deste navegador. A IA recebe apenas data e texto das notas; identificacao do paciente e nome do profissional nao sao enviados.';
+
+    const secao = (t) => { const d = document.createElement('div'); d.style.cssText = 'font-weight:bold;color:#173b59;margin:14px 0 8px;border-bottom:1px solid #ddd'; d.textContent = t; return d; };
+
+    corpo.append(
+      aviso,
+      campoJanela('Provedor de IA', selProvedor),
+      campoJanela('Chave da API', inChave, 'Anthropic: criar a chave dentro de um workspace (Console > API keys).'),
+      campoJanela('Modelo', inModelo),
+      blocoWorkspace,
+      secao('O que gerar no botao Relatorio IA'),
+      cxRelatorio.linha, cxCorrecao.linha,
+      secao('Quais notas vao para a IA'),
+      cxMedicas.linha,
+      campoJanela('Quantas notas (as mais recentes); 0 = todas', inMax, '10 basta para o relatorio; o resumo do caso usa ao menos 15.'),
+      secao('Saida'),
+      cxTxt.linha,
+      status, acoes,
+    );
   }
 
-  function apagarChave() {
-    if (!confirm('Apagar a chave de IA guardada neste navegador?')) return;
-    GM_setValue('ia_chave', '');
-    alert('Chave apagada.');
-    atualizarBotoes();
-  }
-
-  function escolherSaidas() {
-    const rel = confirm('Gerar RELATORIO MEDICO (INSS) com a IA?\n\nOK = sim, Cancelar = nao.');
-    GM_setValue('ia_relatorio', rel);
-    const cor = confirm('Gerar EVOLUCOES CORRIGIDAS (portugues, sem mudar o conteudo) com a IA?\n\nOK = sim, Cancelar = nao.');
-    GM_setValue('ia_correcao', cor);
-    const med = confirm('Mandar a IA SO as notas do tipo "Evolução Médica"?\n\nOK = sim (enfermagem/farmacia ficam fora), Cancelar = nao (vai tudo que o filtro do Tasy mostra).');
-    GM_setValue('ia_so_medicas', med);
-    const max = prompt('Quantas notas (as mais recentes) mandar para a IA? 0 = todas.',
-      String(GM_getValue('ia_max_notas', 10)));
-    if (max !== null && /^\d+$/.test(texto(max))) GM_setValue('ia_max_notas', Number(texto(max)));
-    const cfg = configIA();
-    alert(`Saidas: relatorio ${rel ? 'SIM' : 'NAO'}, evolucoes corrigidas ${cor ? 'SIM' : 'NAO'}, ` +
-      `so evolucoes medicas ${med ? 'SIM' : 'NAO'}, notas para a IA: ${cfg.maxNotas || 'todas'}.`);
-  }
-
-  /** Botao de engrenagem na barra do Tasy: o menu do Tampermonkey nao aparece
-   *  na janela do prontuario ("nao possui acesso a esta pagina"). */
-  async function menuConfiguracao() {
-    const cfg = configIA();
-    const opcao = prompt(
-      `IA: ${PROVEDORES[cfg.provedor].nome}, ${cfg.modelo}, chave ${cfg.chave ? 'configurada' : 'AUSENTE'}.\n\n` +
-      'Digite o numero:\n1 = Configurar IA (provedor, chave, modelo)\n2 = Testar chave\n' +
-      '3 = Escolher saidas (relatorio / correcao / so medicas)\n4 = Apagar chave', '1');
-    if (opcao === null) return;
-    const acao = { 1: configurarIA, 2: testarChave, 3: escolherSaidas, 4: apagarChave }[texto(opcao)];
-    if (acao) await acao();
-  }
-
-  async function testarChave() {
-    const cfg = configIA();
-    if (!cfg.chave) { alert('Nenhuma chave configurada. Use "Configurar IA...".'); return; }
-    try {
-      const resposta = await chamarIA(cfg, 'Responda apenas: ok', 'teste', { rapido: true });
-      alert(`Chave funcionando (${PROVEDORES[cfg.provedor].nome}, ${cfg.modelo}). Resposta: ${texto(resposta).slice(0, 40)}`);
-    } catch (erro) {
-      alert(`Falhou: ${erro.message}`);
-    }
-  }
-
-  GM_registerMenuCommand('Configurar IA (provedor, chave, modelo)...', configurarIA);
-  GM_registerMenuCommand('Escolher saidas (relatorio / correcao)...', escolherSaidas);
-  GM_registerMenuCommand('Testar chave da IA', testarChave);
-  GM_registerMenuCommand('Apagar chave da IA', apagarChave);
+  GM_registerMenuCommand('Configurar IA (chave, modelo, saidas)...', configurarIA);
 
   // ------------------------------------------------------------------ IA: prompts
 
@@ -446,7 +552,7 @@
       : `Pacote p/ IA (${quantidade})`;
     botaoIA.title = cfg.chave
       ? `Corrige as evolucoes e gera o relatorio com ${PROVEDORES[cfg.provedor].nome} (${cfg.modelo}); sai em TXT e na area de transferencia`
-      : 'Sem chave de IA configurada (menu do Tampermonkey): gera prompt + evolucoes para colar numa IA de chat';
+      : 'Sem chave de IA configurada (botao ⚙): gera prompt + evolucoes para colar numa IA de chat';
     botaoResumo.textContent = `Resumo IA (${Math.min(quantidade, Math.max(cfg.maxNotas, 15) || quantidade)})`;
     botaoResumo.title = 'Resume o caso para colar no topo da evolucao (historico neuro direto, doenca de base didatica, exames, HD) com as notas mais recentes';
     botaoCopiar.disabled = quantidade === 0;
@@ -590,8 +696,8 @@
   // ------------------------------------------------------------------ coleta
 
   /** Percorre as linhas visiveis e devolve [{data, meta:[...], conteudo}]. */
-  async function coletarEvolucoes() {
-    const datas = [...new Set(acharLinhas().map((linha) => linha.data))];
+  async function coletarEvolucoes(linhasEscolhidas) {
+    const datas = [...new Set((linhasEscolhidas || acharLinhas()).map((linha) => linha.data))];
     const evolucoes = [];
     for (let indice = 0; indice < datas.length; indice += 1) {
       if (cancelar) break;
@@ -780,12 +886,27 @@
   async function gerarComIA(modo = 'relatorio') {
     if (executando) { cancelar = true; informar('Cancelando...'); return; }
 
-    const quantidade = new Set(acharLinhas().map((l) => l.data)).size;
-    if (!quantidade) { alert('Nenhuma evolucao visivel foi encontrada.'); return; }
+    const visiveis = acharLinhas();
+    if (!visiveis.length) { alert('Nenhuma evolucao visivel foi encontrada.'); return; }
 
     const resumo = modo === 'resumo';
     const botaoAtivo = resumo ? botaoResumo : botaoIA;
     const cfg = configIA();
+
+    // Quais linhas ler: filtra ANTES de clicar (pela coluna Tipo de nota /
+    // Funcao da grade) e corta nas N mais recentes (a grade vem da mais nova
+    // para a mais antiga). Assim nao depende do filtro do Tasy e nao perde
+    // tempo abrindo nota que nao vai para a IA.
+    let linhasAlvo = visiveis;
+    let avisoFiltro = '';
+    if (cfg.chave && cfg.soMedicas) {
+      const medicas = visiveis.filter((l) => evolucaoMedica({ meta: extrairDadosDaLinha(l.linha) }));
+      if (medicas.length) linhasAlvo = medicas;
+      else avisoFiltro = 'A grade nao mostra a coluna Tipo de nota/Funcao: foram lidas todas as notas visiveis. Para restringir, use o filtro do Tasy (notas do usuario) antes de clicar.';
+    }
+    const limite = resumo ? Math.max(cfg.maxNotas, 15) : cfg.maxNotas;
+    if (cfg.chave && limite > 0) linhasAlvo = linhasAlvo.slice(0, limite);
+    const quantidade = new Set(linhasAlvo.map((l) => l.data)).size;
     if (resumo) {
       if (!cfg.chave) { alert('Configure a chave da IA no botao ⚙ antes de resumir o caso.'); return; }
       if (!confirm(
@@ -795,7 +916,7 @@
       if (!confirm(
         `Nenhuma chave de IA configurada neste navegador.\n\n` +
         `OK = gerar o PACOTE (prompt + ${quantidade} evolucao(oes)) em TXT e na area de transferencia, para colar em qualquer IA.\n` +
-        `Cancelar = sair. Para configurar a chave: icone do Tampermonkey > este script > "Configurar IA...".`)) return;
+        `Cancelar = sair. Para configurar a chave: botao ⚙ ao lado deste.`)) return;
     } else {
       if (!cfg.gerarRelatorio && !cfg.gerarCorrecao) {
         alert('As duas saidas estao desligadas. Ligue pelo menu "Escolher saidas".');
@@ -803,32 +924,29 @@
       }
       const oque = [cfg.gerarCorrecao && 'evolucoes corrigidas', cfg.gerarRelatorio && 'relatorio medico']
         .filter(Boolean).join(' + ');
+      const filtro = linhasAlvo.length < visiveis.length
+        ? ` (${cfg.soMedicas && !avisoFiltro ? 'so as de medico, ' : ''}as ${quantidade} mais recentes de ${visiveis.length} visiveis)` : '';
       if (!confirm(
-        `Ler ${quantidade} evolucao(oes)${cfg.soMedicas ? ' (so as medicas)' : ''} e gerar com ${PROVEDORES[cfg.provedor].nome} (${cfg.modelo}):\n${oque}.\n\n` +
+        `Ler ${quantidade} evolucao(oes)${filtro} e gerar com ${PROVEDORES[cfg.provedor].nome} (${cfg.modelo}):\n${oque}.\n\n` +
         'Sao enviados a IA somente data e texto das notas (sem identificacao). Continuar?')) return;
     }
 
     iniciarExecucao(botaoAtivo);
     try {
       const identificacao = capturarIdentificacaoVisivel();
-      const todas = await coletarEvolucoes();
+      const todas = await coletarEvolucoes(cfg.chave ? linhasAlvo : visiveis);
       if (cancelar) { informar('Interrompido.'); return; }
-      // o que vai para a IA: opcionalmente so as medicas e, por padrao, so as
-      // 10 mais recentes (a grade do Tasy vem da mais nova para a mais antiga)
-      let evolucoes = cfg.chave && cfg.soMedicas ? todas.filter(evolucaoMedica) : todas;
-      if (!evolucoes.length) throw new Error('nenhuma nota do tipo "Evolução Médica" entre as visiveis');
-      // resumo do caso aceita mais historia: ate 15 notas (pedido de 29/09/2026)
-      const limite = resumo ? Math.max(cfg.maxNotas, 15) : cfg.maxNotas;
-      if (cfg.chave && limite > 0) evolucoes = evolucoes.slice(0, limite);
+      const evolucoes = todas;
 
       const textoIA = montarTextoParaIA(evolucoes);
       const carimbo = new Date().toLocaleString('pt-BR');
       const cabecalho = [
         'DOCUMENTO GERADO COM AUXILIO DE IA - RASCUNHO, REVISAR E EDITAR ANTES DE USAR',
         `Gerado em: ${carimbo}`,
-        `Evolucoes lidas: ${todas.length}; enviadas a IA: ${evolucoes.length}` +
-          (evolucoes.length < todas.length ? ' (as mais recentes; ajuste em ⚙ > 3)' : ''),
+        `Evolucoes visiveis na grade: ${visiveis.length}; lidas e enviadas a IA: ${evolucoes.length}` +
+          (evolucoes.length < visiveis.length ? ' (as mais recentes; quantidade e filtro em ⚙)' : ''),
       ];
+      if (avisoFiltro) cabecalho.push(`AVISO: ${avisoFiltro}`);
       if (identificacao.length) cabecalho.push('', 'IDENTIFICACAO (nao enviada a IA)', ...identificacao);
 
       // sem chave: pacote para colar numa IA de chat
@@ -883,7 +1001,7 @@
       if (saidas.relatorio) {
         secoes.push('', '='.repeat(78), 'RELATORIO MEDICO (rascunho da IA)', '', saidas.relatorio);
       }
-      // evolucoes corrigidas so entram no TXT se a saida estiver ligada (⚙ > 3);
+      // evolucoes corrigidas so entram no TXT se a saida estiver ligada (⚙);
       // as originais nao entram (pedido de 29/09/2026: "so o relatorio mesmo")
       if (saidas.correcao) {
         secoes.push('', '='.repeat(78), 'EVOLUCOES CORRIGIDAS (portugues; conteudo preservado)', '',
@@ -895,12 +1013,12 @@
       // sem relatorio, vao as evolucoes corrigidas
       const principal = saidas.resumo || saidas.relatorio || saidas.correcao;
       GM_setClipboard(principal, 'text');
-      baixarTexto(resultado, resumo ? 'resumo-ia' : 'relatorio-ia');
+      const prefixo = resumo ? 'resumo-ia' : 'relatorio-ia';
+      if (cfg.baixarTxt) baixarTexto(resultado, prefixo);
       const nome = resumo ? 'resumo do caso' : 'relatorio';
-      informar(
-        `Pronto: ${nome}${saidas.correcao ? ' + evolucoes corrigidas' : ''} em TXT; ` +
-        `${nome} na area de transferencia.` +
-        (erros.length ? ' (parte falhou, veja o TXT)' : ''), erros.length ? 'erro' : 'ok');
+      informar(`Pronto: ${nome} copiado.` + (erros.length ? ' (parte falhou, veja a janela)' : ''), erros.length ? 'erro' : 'ok');
+      mostrarResultado(resumo ? 'Resumo do caso (rascunho da IA)' : 'Relatorio medico (rascunho da IA)',
+        principal, resultado, prefixo, resumo, [avisoFiltro, ...erros.map((e) => `Parte falhou: ${e}`)].filter(Boolean));
     } catch (erro) {
       console.error('[Relatorio IA]', erro);
       informar(`Erro: ${erro.message}`, 'erro');
@@ -908,6 +1026,50 @@
     } finally {
       encerrarExecucao(botaoAtivo);
     }
+  }
+
+  // ------------------------------------------------------------------ janela de resultado
+
+  /** O texto gerado numa janela, ja copiado, com o passo seguinte escrito. */
+  function mostrarResultado(titulo, principal, completo, prefixo, resumo, avisos) {
+    const { corpo, fechar } = abrirJanela(titulo, 760);
+
+    const passos = document.createElement('div');
+    passos.style.cssText = 'background:#e8f5ee;border-left:4px solid #1b5e3a;padding:10px 12px;margin-bottom:10px;line-height:1.5';
+    passos.innerHTML = resumo
+      ? '<b>Ja esta copiado.</b> Abra a evolucao de hoje, cole no topo (Ctrl+V) e revise antes de salvar.'
+      : '<b>Ja esta copiado.</b> Agora: <b>1)</b> clique no nome do paciente (canto superior direito) ' +
+        '&rarr; <b>Atestado</b>; <b>2)</b> Ctrl+V; <b>3)</b> revise, corrija e assine. ' +
+        'E um rascunho: confira cada dado antes de entregar.';
+
+    const area = document.createElement('textarea');
+    area.readOnly = true;
+    area.value = principal;
+    area.style.cssText = 'width:100%;box-sizing:border-box;height:52vh;padding:10px;border:1px solid #bbb;border-radius:4px;font:13px/1.45 Consolas,monospace;resize:vertical';
+
+    const acoes = document.createElement('div');
+    acoes.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center';
+    const info = document.createElement('span');
+    info.style.cssText = 'color:#1b5e3a;font-weight:bold;margin-left:auto';
+    acoes.append(
+      botaoJanela('Copiar de novo', '#2155a5', () => {
+        GM_setClipboard(area.value, 'text');
+        info.textContent = 'Copiado.'; setTimeout(() => { info.textContent = ''; }, 2500);
+      }),
+      botaoJanela('Baixar TXT', '#555', () => baixarTexto(completo, prefixo)),
+      botaoJanela('Fechar', '#777', fechar),
+      info,
+    );
+
+    corpo.appendChild(passos);
+    for (const aviso of avisos || []) {
+      const a = document.createElement('div');
+      a.style.cssText = 'background:#fff4e5;border-left:4px solid #b26a00;padding:8px 12px;margin-bottom:10px';
+      a.textContent = aviso;
+      corpo.appendChild(a);
+    }
+    corpo.append(area, acoes);
+    area.focus(); area.select();
   }
 
   // ------------------------------------------------------------------ interface
@@ -975,8 +1137,8 @@
 
     const botaoConfig = criarBotao('tm-ia-config', '#555');
     botaoConfig.textContent = '⚙';
-    botaoConfig.title = 'Configurar IA (chave, modelo, saidas)';
-    botaoConfig.addEventListener('click', menuConfiguracao);
+    botaoConfig.title = 'Configurar IA (chave, modelo, quais notas, saidas)';
+    botaoConfig.addEventListener('click', configurarIA);
 
     grupoBotoes.append(botaoCopiar, botaoXls, botaoIA, botaoResumo, botaoConfig);
     document.body.append(painel, grupoBotoes);
